@@ -1,7 +1,7 @@
 use axum::{
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::post,
+    routing::options,
     Form, Router,
 };
 use lambda_http::{run, Error};
@@ -45,6 +45,20 @@ fn tera_templates() -> &'static Tera {
 
 fn access_control_allow_origin() -> String {
     var("ACCESS_CONTROL_ALLOW_ORIGIN").unwrap_or("".to_string())
+}
+
+async fn options_handler() -> impl IntoResponse {
+    let headers = [
+        (
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            access_control_allow_origin(),
+        ),
+        (
+            header::ACCESS_CONTROL_ALLOW_METHODS,
+            "POST, OPTIONS".to_string(),
+        ),
+    ];
+    (StatusCode::OK, headers, "")
 }
 
 #[derive(Deserialize)]
@@ -152,7 +166,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // build our application with a single route
-    let app = Router::new().route("/scrape/media", post(scrape_media));
+    let app = Router::new().route("/scrape/media", options(options_handler).post(scrape_media));
 
     run(app).await
 }
