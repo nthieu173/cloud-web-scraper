@@ -1,14 +1,13 @@
 use axum::{
     http::{header, StatusCode},
     response::IntoResponse,
-    routing::options,
+    routing::post,
     Form, Router,
 };
 use lambda_http::{run, Error};
 use mime_guess::from_ext;
 use scraper::{Html, Selector};
 use serde::Deserialize;
-use std::env::var;
 use std::sync::OnceLock;
 use tera::Tera;
 use tokio;
@@ -43,28 +42,6 @@ fn tera_templates() -> &'static Tera {
     })
 }
 
-fn access_control_allow_origin() -> String {
-    var("ACCESS_CONTROL_ALLOW_ORIGIN").unwrap_or("".to_string())
-}
-
-async fn options_handler() -> impl IntoResponse {
-    let headers = [
-        (
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            access_control_allow_origin(),
-        ),
-        (
-            header::ACCESS_CONTROL_ALLOW_METHODS,
-            "POST, OPTIONS".to_string(),
-        ),
-        (
-            header::ACCESS_CONTROL_ALLOW_HEADERS,
-            "Content-Type".to_string(),
-        ),
-    ];
-    (StatusCode::OK, headers, "")
-}
-
 #[derive(Deserialize)]
 struct ScrapeForm {
     url: String,
@@ -89,14 +66,6 @@ fn error_to_bulma_error_card(error: &str) -> String {
 
 async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
     let website_url = params.url;
-
-    let headers = [
-        (
-            header::ACCESS_CONTROL_ALLOW_ORIGIN,
-            access_control_allow_origin(),
-        ),
-        (header::CONTENT_TYPE, "text/html".to_string()),
-    ];
 
     if let Ok(response) = ureq::get(&website_url).call() {
         if response.status() / 100 == 2 {
@@ -153,7 +122,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
                 // We return the urls as a json array
                 return (
                     StatusCode::OK,
-                    headers,
+                    [(header::CONTENT_TYPE, "text/html")],
                     name_url_list_to_bulma_panel(&website_url, name_urls),
                 );
             }
@@ -162,7 +131,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
 
     (
         StatusCode::BAD_GATEWAY,
-        headers,
+        [(header::CONTENT_TYPE, "text/html")],
         error_to_bulma_error_card("Cannot scrape media from this website"),
     )
 }
@@ -170,7 +139,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     // build our application with a single route
-    let app = Router::new().route("/scrape/media", options(options_handler).post(scrape_media));
+    let app = Router::new().route("/scrape/media", post(scrape_media));
 
     run(app).await
 }
