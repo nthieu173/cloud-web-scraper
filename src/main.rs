@@ -8,6 +8,7 @@ use lambda_http::{run, Error};
 use mime_guess::from_ext;
 use scraper::{Html, Selector};
 use serde::Deserialize;
+use std::env::var;
 use std::sync::OnceLock;
 use tera::Tera;
 use tokio;
@@ -42,6 +43,10 @@ fn tera_templates() -> &'static Tera {
     })
 }
 
+fn access_control_allow_origin() -> String {
+    var("ACCESS_CONTROL_ALLOW_ORIGIN").unwrap_or("".to_string())
+}
+
 #[derive(Deserialize)]
 struct ScrapeForm {
     url: String,
@@ -66,6 +71,14 @@ fn error_to_bulma_error_card(error: &str) -> String {
 
 async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
     let website_url = params.url;
+
+    let headers = [
+        (
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            access_control_allow_origin(),
+        ),
+        (header::CONTENT_TYPE, "text/html".to_string()),
+    ];
 
     if let Ok(response) = ureq::get(&website_url).call() {
         if response.status() / 100 == 2 {
@@ -122,7 +135,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
                 // We return the urls as a json array
                 return (
                     StatusCode::OK,
-                    [(header::CONTENT_TYPE, "text/html")],
+                    headers,
                     name_url_list_to_bulma_panel(&website_url, name_urls),
                 );
             }
@@ -131,7 +144,7 @@ async fn scrape_media(Form(params): Form<ScrapeForm>) -> impl IntoResponse {
 
     (
         StatusCode::BAD_GATEWAY,
-        [(header::CONTENT_TYPE, "text/html")],
+        headers,
         error_to_bulma_error_card("Cannot scrape media from this website"),
     )
 }
