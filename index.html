@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Website Media Scraper</title>
+    <link rel="stylesheet" href="./css/bulma.min.css">
+    <link rel="icon" type="image/x-icon" href="./img/seal-fishing.png">
+    <script defer src="./js/htmx.js"></script>
+    <script defer src="./js/main.js"></script>
+</head>
+
+<body>
+    <nav class="navbar is-light" role="navigation" aria-label="main navigation">
+        <div class="navbar-brand">
+            <span class="navbar-item">
+                <img src="./img/seal-fishing.png" alt="Black and white doodle of a seal fishing">
+            </span>
+
+            <a role="button" class="navbar-burger" aria-label="menu" aria-expanded="false"
+                data-target="navbarBasicExample">
+                <span aria-hidden="true"></span>
+                <span aria-hidden="true"></span>
+                <span aria-hidden="true"></span>
+            </a>
+        </div>
+
+        <div id="navbarBasicExample" class="navbar-menu">
+            <div class="navbar-start">
+                <a class="navbar-item" href="">
+                    Home
+                </a>
+
+                <a class="navbar-item" href="./img/seal-fishing.png">
+                    Seal Fishing
+                </a>
+            </div>
+        </div>
+    </nav>
+    <section class="section">
+        <div class="container">
+            <h1 class="title">
+                Paste the URL of the website you want to scrape
+            </h1>
+
+            <form id="website-url-form" class="form" hx-post="http://localhost:9000/scrape/media"
+                hx-target="#media-container" hx-swap="beforeend" id="website-url-form">
+                <div class="field">
+                    <label for="website-url-input" class="label">URL</label>
+                    <div class="control">
+                        <input tabindex="0" class="input" id="website-url-input" type="url" name="url"
+                            placeholder="https://example.com" required>
+                    </div>
+                </div>
+                <div class="field">
+                    <div class="control">
+                        <button tabindex="0" id="scrape-submit-button" type="submit" aria-label="submit"
+                            class="button is-link">Scrape</button>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="container" id="media-container"></div>
+    </section>
+</body>
+
+</html>
