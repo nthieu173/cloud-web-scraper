@@ -57,6 +57,10 @@ async fn options_handler() -> impl IntoResponse {
             header::ACCESS_CONTROL_ALLOW_METHODS,
             "POST, OPTIONS".to_string(),
         ),
+        (
+            header::ACCESS_CONTROL_ALLOW_HEADERS,
+            "Content-Type".to_string(),
+        ),
     ];
     (StatusCode::OK, headers, "")
 }
