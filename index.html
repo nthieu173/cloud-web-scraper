@@ -7,7 +7,7 @@
     <title>Website Media Scraper</title>
     <link rel="stylesheet" href="./css/bulma.min.css">
     <link rel="icon" type="image/x-icon" href="./img/seal-fishing.png">
-    <script defer src="./js/htmx.js"></script>
+    <script defer src="./js/htmx.min.js"></script>
     <script defer src="./js/main.js"></script>
 </head>
 
@@ -44,7 +44,8 @@
                 Paste the URL of the website you want to scrape
             </h1>
 
-            <form id="website-url-form" class="form" hx-post="http://localhost:9000/scrape/media"
+            <form id="website-url-form" class="form"
+                hx-post="https://xutq3akq464pkomlm4wlpzil7u0keqyo.lambda-url.ap-southeast-1.on.aws/scrape/media"
                 hx-target="#media-container" hx-swap="beforeend" id="website-url-form">
                 <div class="field">
                     <label for="website-url-input" class="label">URL</label>
