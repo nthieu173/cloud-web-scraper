@@ -1,5 +1,6 @@
 import { type JSX, type SubmitEvent, startTransition, useActionState } from "react";
 
+import { cacheScrape, cachedScrape } from "./api/cache";
 import { scrapeMedia } from "./api/client";
 import { type ErrorCode, type ScrapeOutcome, parseWebsiteUrl } from "./api/wire";
 import { mediaName } from "./mediaName";
@@ -8,6 +9,14 @@ interface Scrape {
   readonly id: number;
   readonly url: string;
   readonly outcome: ScrapeOutcome;
+  /** Set when the result came from this browser's cache: when it was scraped. */
+  readonly cachedAt?: number;
+}
+
+interface ScrapeRequest {
+  readonly url: string;
+  /** Skip the cache, as "Scrape again" does. */
+  readonly fresh: boolean;
 }
 
 const UNAVAILABLE = "The scraper is unavailable right now. Try again later.";
@@ -23,16 +32,34 @@ const MESSAGES: Record<ErrorCode, string> = {
   unavailable: UNAVAILABLE,
 };
 
+const SCRAPED_AT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
+
 /** Newest first. The list only grows, so its length is a fresh key. */
-async function scrape(previous: readonly Scrape[], form: FormData): Promise<readonly Scrape[]> {
-  const input = form.get("url");
-  const url = typeof input === "string" ? input.trim() : "";
-  const outcome: ScrapeOutcome =
-    parseWebsiteUrl(url) === undefined ? { ok: false, error: "invalid_url" } : await scrapeMedia(url);
-  return [{ id: previous.length, url, outcome }, ...previous];
+async function scrape(previous: readonly Scrape[], request: ScrapeRequest): Promise<readonly Scrape[]> {
+  const url = request.url.trim();
+  const id = previous.length;
+  const parsed = parseWebsiteUrl(url);
+  if (parsed === undefined) {
+    return [{ id, url, outcome: { ok: false, error: "invalid_url" } }, ...previous];
+  }
+  const cached = request.fresh ? undefined : cachedScrape(parsed, Date.now());
+  if (cached !== undefined) {
+    return [{ id, url, outcome: { ok: true, result: cached.result }, cachedAt: cached.scrapedAt }, ...previous];
+  }
+  const outcome = await scrapeMedia(url);
+  if (outcome.ok) {
+    cacheScrape(parsed, outcome.result, Date.now());
+  }
+  return [{ id, url, outcome }, ...previous];
 }
 
-function ScrapePanel({ scrape: { url, outcome } }: { readonly scrape: Scrape }): JSX.Element {
+interface ScrapePanelProps {
+  readonly scrape: Scrape;
+  readonly pending: boolean;
+  readonly onScrapeAgain: (url: string) => void;
+}
+
+function ScrapePanel({ scrape: { url, outcome, cachedAt }, pending, onScrapeAgain }: ScrapePanelProps): JSX.Element {
   if (!outcome.ok) {
     return (
       <article className="panel panel-error">
@@ -45,6 +72,20 @@ function ScrapePanel({ scrape: { url, outcome } }: { readonly scrape: Scrape }):
   return (
     <article className="panel">
       <h2>{url}</h2>
+      {cachedAt !== undefined && (
+        <div className="panel-note">
+          <span>Cached from {SCRAPED_AT.format(cachedAt)}</span>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              onScrapeAgain(url);
+            }}
+          >
+            Scrape again
+          </button>
+        </div>
+      )}
       {links.length === 0 ? (
         <p>No audio or video links found.</p>
       ) : (
@@ -70,12 +111,20 @@ export default function App(): JSX.Element {
 
   // Dispatched from onSubmit rather than passed as the form's action, so React
   // does not reset the form and the URL stays for editing.
+  function request(url: string, fresh: boolean): void {
+    startTransition(() => {
+      dispatch({ url, fresh });
+    });
+  }
+
   function handleSubmit(event: SubmitEvent<HTMLFormElement>): void {
     event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    startTransition(() => {
-      dispatch(form);
-    });
+    const input = new FormData(event.currentTarget).get("url");
+    request(typeof input === "string" ? input : "", false);
+  }
+
+  function handleScrapeAgain(url: string): void {
+    request(url, true);
   }
 
   return (
@@ -99,7 +148,7 @@ export default function App(): JSX.Element {
         </form>
         <section aria-label="Results" className="results">
           {scrapes.map((entry) => (
-            <ScrapePanel key={entry.id} scrape={entry} />
+            <ScrapePanel key={entry.id} scrape={entry} pending={pending} onScrapeAgain={handleScrapeAgain} />
           ))}
         </section>
       </main>

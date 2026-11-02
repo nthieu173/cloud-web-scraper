@@ -81,3 +81,42 @@ test("disables the form while a scrape is pending", async () => {
   respond(Response.json({ url: "https://a.example/", links: [] }));
   expect(await screen.findByRole("button", { name: "Scrape" })).toBeEnabled();
 });
+
+test("answers a repeat scrape from this browser's cache until asked to scrape again", async () => {
+  const worker = stubWorker(
+    Response.json({ url: "https://a.example/", links: ["https://a.example/old.mp3"] }),
+    Response.json({ url: "https://a.example/", links: ["https://a.example/new.mp3"] }),
+  );
+  render(<App />);
+
+  await submit("https://a.example");
+  await screen.findByRole("link", { name: "old.mp3" });
+  expect(screen.queryByText(/^Cached from/u)).toBeNull();
+
+  await submit("https://a.example/");
+  expect(await screen.findByText(/^Cached from/u)).toBeInTheDocument();
+  expect(screen.getAllByRole("link", { name: "old.mp3" })).toHaveLength(2);
+  expect(worker).toHaveBeenCalledOnce();
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Scrape again" }));
+  expect(await screen.findByRole("link", { name: "new.mp3" })).toBeInTheDocument();
+  expect(worker).toHaveBeenCalledTimes(2);
+
+  // The fresh result replaced the cached one.
+  await submit("https://a.example");
+  expect(await screen.findAllByRole("link", { name: "new.mp3" })).toHaveLength(2);
+  expect(worker).toHaveBeenCalledTimes(2);
+});
+
+test("does not cache errors", async () => {
+  const worker = stubWorker(
+    Response.json({ error: "unreachable" }, { status: 502 }),
+    Response.json({ url: "https://a.example/", links: [] }),
+  );
+  render(<App />);
+  await submit("https://a.example");
+  await screen.findByRole("alert");
+  await submit("https://a.example");
+  await screen.findByText("No audio or video links found.");
+  expect(worker).toHaveBeenCalledTimes(2);
+});

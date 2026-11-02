@@ -26,7 +26,9 @@ here.
   links count as media. To update, replace the file and the commit link.
 - `web/`: one npm project (Vite, React, TypeScript, Vitest, ESLint):
   - `src/`: the page; `src/api/wire.ts` decodes the JSON the page and the
-    Worker exchange, matching the Lambda's types.
+    Worker exchange, matching the Lambda's types; `src/api/cache.ts` keeps
+    successful results in the visitor's localStorage for 7 days (50 pages at
+    most), so repeat scrapes skip the Worker until "Scrape again".
   - `worker/`: the Cloudflare Worker, built to one ES module.
   - `public/`: static files copied into the page's build.
 - `scripts/gate.sh`: every check, run by `make gate` and CI.

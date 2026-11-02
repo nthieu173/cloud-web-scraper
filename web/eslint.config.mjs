@@ -83,7 +83,7 @@ export default tseslint.config(
           object: "JSON",
           property: "parse",
           message:
-            "Read JSON as unknown with Response.json() and validate it completely with a decoder in src/api/wire.ts.",
+            "Read JSON as unknown with Response.json() or parseJson() from src/api/wire.ts, and validate it completely.",
         },
       ],
     },
@@ -118,6 +118,13 @@ export default tseslint.config(
           assertionStyle: "never",
         },
       ],
+    },
+  },
+  {
+    // parseJson() is the one place JSON text becomes a value; it returns unknown.
+    files: ["src/api/wire.ts"],
+    rules: {
+      "no-restricted-properties": "off",
     },
   },
   {

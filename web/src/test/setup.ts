@@ -7,4 +7,8 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
+  // The Worker's tests run in Node, which has no window.
+  if (typeof window !== "undefined") {
+    window.localStorage.clear();
+  }
 });

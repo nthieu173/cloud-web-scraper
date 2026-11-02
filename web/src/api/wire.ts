@@ -2,8 +2,8 @@
  * The scrape API's wire shapes, shared by the page and the Worker. The Lambda
  * in `src/main.rs` (repository root) writes the same JSON.
  *
- * Every payload arrives as `unknown` and is validated here completely; ESLint
- * forbids `JSON.parse` so nothing skips that.
+ * Every payload arrives as `unknown` and is validated completely before use;
+ * ESLint forbids `JSON.parse` outside `parseJson` so nothing skips that.
  */
 
 export const SCRAPE_PATH = "/scrape/media";
@@ -45,12 +45,21 @@ export function statusOf(error: ErrorCode): number {
 }
 
 /** `typeof` alone also admits `null` and arrays. */
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isErrorCode(value: unknown): value is ErrorCode {
   return typeof value === "string" && Object.hasOwn(ERROR_STATUSES, value);
+}
+
+/** Parses JSON text as `unknown`, or `undefined` if it is not JSON. */
+export function parseJson(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return undefined;
+  }
 }
 
 /** Only absolute http(s) URLs with a host may be scraped or linked to. */
