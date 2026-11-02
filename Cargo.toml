@@ -5,14 +5,19 @@ edition = "2024"
 publish = false
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["form", "tokio"] }
+# lol_html's encodings, to honor a Content-Type charset.
+encoding_rs = "0.8.44"
 # Function URLs send API Gateway HTTP API (payload 2.0) events.
 lambda_http = { version = "1.3.2", default-features = false, features = ["apigw_http"] }
-mime_guess = "2.0.5"
-scraper = "0.29.0"
+# Streams the page through its parser without building a DOM.
+lol_html = "3.0.3"
+# rustls with ring, installed at startup: the default aws-lc-rs provider needs a
+# C toolchain for the arm64 cross-build, and ring already builds with Zig.
+reqwest = { version = "0.13.5", default-features = false, features = ["gzip", "rustls-no-provider"] }
+rustls = { version = "0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1.0.229", features = ["derive"] }
-tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread"] }
-ureq = "3.5.0"
+serde_json = "1.0.154"
+tokio = { version = "1.54.1", features = ["macros", "rt"] }
 url = "2.5.8"
 
 [lints.clippy]

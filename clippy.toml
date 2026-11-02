@@ -7,8 +7,8 @@ allow-panic-in-tests = true
 allow-unwrap-in-tests = true
 
 # Each pair comes from upstream crates mid-migration:
-# - base64: lambda_http uses 0.22, ureq 0.23.
-# - syn: proc macros for lambda_runtime and scraper's selectors still use 2;
-#   cssparser and ICU's macros use 3.
+# - base64: lambda_http uses 0.22; hyper-util, under reqwest, 0.23.
+# - syn: lambda_runtime's async-stream macros still use 2; ICU's macros, under
+#   url, use 3.
 # - windows-sys: Windows-only (ring and tokio's mio); never built for Lambda.
 allowed-duplicate-crates = ["base64", "syn", "windows-sys"]

@@ -1,35 +1,91 @@
-use std::fmt::Write as _;
-use std::sync::Arc;
+//! The scraper Lambda: lists the audio and video files a web page links to.
+//!
+//! It answers `POST /scrape/media` with a JSON body `{"url": "..."}`, sent by
+//! the Cloudflare Worker in `web/worker/`. It fetches the page, streams it
+//! through an HTML tokenizer without building a DOM, and answers
+//! `{"url": <final URL>, "links": [<absolute URLs>]}`. Failures answer
+//! `{"error": <code>}`; `web/src/api/wire.ts` holds the browser's copy of
+//! these shapes.
+
+use std::collections::HashSet;
+use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use axum::{
-    Form, Router,
-    extract::State,
-    http::{HeaderMap, StatusCode, header},
-    response::{IntoResponse, Response},
-    routing::post,
-};
-use lambda_http::{Error, run};
-use mime_guess::{from_ext, mime};
-use scraper::Html;
-use serde::Deserialize;
-use ureq::ResponseExt;
+use encoding_rs::Encoding;
+use lambda_http::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use lambda_http::{Body, Error, Request, Response, run, service_fn};
+use lol_html::errors::RewritingError;
+use lol_html::send::{Element, HtmlRewriter, Settings};
+use lol_html::{AsciiCompatibleEncoding, element};
+use serde::{Deserialize, Serialize};
 use url::Url;
 
 /// Header the Cloudflare Worker adds to every request it forwards. The function
 /// URL is public, so requests without it did not come through the Worker.
 const SHARED_SECRET_HEADER: &str = "x-scraper-secret";
 const SHARED_SECRET_VARIABLE: &str = "SCRAPER_SHARED_SECRET";
+const ROUTE: &str = "/scrape/media";
 
 /// The Lambda times out after 10 seconds; the fetch must give up first.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
-const MAX_BODY_BYTES: u64 = 5 * 1024 * 1024;
+/// Counted after decompression.
+const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 
-#[derive(Clone)]
-struct AppState {
-    shared_secret: Arc<str>,
-    agent: ureq::Agent,
+/// File extensions treated as audio or video, lowercase and sorted for binary
+/// search. Hand-maintained: the common containers, codecs and playlists.
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "3g2", "3gp", "aac", "ac3", "aif", "aifc", "aiff", "amr", "asf", "au", "avi", "caf",
+    "divx", "dv", "f4v", "flac", "flv", "m1v", "m2t", "m2ts", "m2v", "m3u", "m3u8",
+    "m4a", "m4b", "m4p", "m4r", "m4v", "mid", "midi", "mk3d", "mka", "mkv", "mov", "mp2",
+    "mp3", "mp4", "mp4v", "mpd", "mpe", "mpeg", "mpg", "mpga", "mts", "oga", "ogg",
+    "ogv", "opus", "qt", "ra", "ram", "snd", "spx", "ts", "vob", "wav", "wave", "weba",
+    "webm", "wma", "wmv",
+];
+
+/// Elements whose link attribute can point at media, plus `<base>`, which
+/// changes what relative links resolve against.
+const LINK_SELECTOR: &str =
+    "a[href], area[href], audio[src], base[href], source[src], track[src], video[src]";
+
+/// The reasons a scrape fails, sent as `{"error": "<snake_case name>"}`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ErrorCode {
+    Forbidden,
+    NotFound,
+    InvalidRequest,
+    InvalidUrl,
+    Unreachable,
+    NotHtml,
+    TooLarge,
+}
+
+impl ErrorCode {
+    const fn status(self) -> StatusCode {
+        match self {
+            Self::Forbidden => StatusCode::FORBIDDEN,
+            Self::NotFound => StatusCode::NOT_FOUND,
+            Self::InvalidRequest | Self::InvalidUrl => StatusCode::BAD_REQUEST,
+            Self::Unreachable | Self::NotHtml | Self::TooLarge => StatusCode::BAD_GATEWAY,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct ScrapeRequest {
+    url: String,
+}
+
+#[derive(Serialize)]
+struct ScrapeResult {
+    url: String,
+    links: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct ScrapeError {
+    error: ErrorCode,
 }
 
 /// Compares without stopping at the first difference, so response timing does
@@ -38,187 +94,274 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
-/// Escapes text for HTML element content and quoted attribute values. Page
-/// URLs and link names come from the scraped site, so they are untrusted.
-fn escape_html(text: &str) -> String {
-    let mut escaped = String::with_capacity(text.len());
-    for character in text.chars() {
-        match character {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(character),
-        }
-    }
-    escaped
-}
-
-/// The htmx fragment listing a page's media files.
-fn media_panel(website_url: &str, name_urls: &[(String, String)]) -> String {
-    let mut html = format!(
-        "<article class=\"panel is-info\">\n<p class=\"panel-heading\">{}</p>\n",
-        escape_html(website_url)
-    );
-    for (name, url) in name_urls {
-        let (name, url) = (escape_html(name), escape_html(url));
-        // Writing to a String cannot fail.
-        let _ = writeln!(
-            html,
-            "<a class=\"panel-block\" href=\"{url}\" target=\"_blank\" rel=\"noopener noreferrer\" download=\"{name}\">{name}</a>"
-        );
-    }
-    html.push_str("</article>\n");
-    html
-}
-
-fn html_response(status: StatusCode, html: String) -> Response {
-    (
-        status,
-        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
-        html,
-    )
-        .into_response()
-}
-
-fn error_response(status: StatusCode, error: &str) -> Response {
-    html_response(
-        status,
-        format!(
-            "<div class=\"card\">\n<div class=\"card-content\">\n<div class=\"content\">{}</div>\n</div>\n</div>\n",
-            escape_html(error)
-        ),
-    )
-}
-
-/// Only absolute http(s) URLs may be fetched.
+/// Only absolute http(s) URLs may be fetched. The Worker checks this too; this
+/// copy keeps the Lambda safe on its own.
 fn parse_website_url(input: &str) -> Option<Url> {
     let url = Url::parse(input.trim()).ok()?;
     (matches!(url.scheme(), "http" | "https") && url.host_str().is_some()).then_some(url)
 }
 
-/// Lists the audio and video files linked from a page, in page order and
-/// without duplicates. Relative links resolve against `base`, the page's final
-/// URL after redirects. Query strings are dropped from the returned links.
-fn media_links(base: &Url, body: &str) -> Vec<(String, String)> {
-    let fragment = Html::parse_fragment(body);
-    let mut name_urls: Vec<(String, String)> = Vec::new();
-    for element in fragment.root_element().descendent_elements() {
-        let element = element.value();
-        let link = match element.name() {
-            "a" => element.attr("href"),
-            "audio" | "video" | "source" | "track" => element.attr("src"),
-            _ => continue,
-        };
-        let Some(link) = link else { continue };
-        let link = link.trim().split('?').next().unwrap_or("");
-        let file_name = link.rsplit('/').next().unwrap_or("");
-        let extension = file_name.rsplit('.').next().unwrap_or("");
-        let mime_type = from_ext(extension).first_or_text_plain();
-        if mime_type.type_() != mime::AUDIO && mime_type.type_() != mime::VIDEO {
-            continue;
-        }
-        let Ok(absolute) = base.join(link) else {
-            continue;
-        };
-        let item = (file_name.to_owned(), absolute.to_string());
-        // A Vec instead of a HashSet keeps the page's order.
-        if !name_urls.contains(&item) {
-            name_urls.push(item);
-        }
-    }
-    name_urls
+/// Whether a URL path's last segment has an audio or video extension.
+fn is_media_path(path: &str) -> bool {
+    let file_name = path.rsplit('/').next().unwrap_or_default();
+    file_name.rsplit_once('.').is_some_and(|(_, extension)| {
+        MEDIA_EXTENSIONS
+            .binary_search(&extension.to_ascii_lowercase().as_str())
+            .is_ok()
+    })
 }
 
-#[derive(Deserialize)]
-struct ScrapeForm {
-    url: String,
+/// A missing `Content-Type` is given the benefit of the doubt.
+fn is_html(headers: &HeaderMap) -> bool {
+    headers
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_none_or(|value| {
+            let essence = value.split(';').next().unwrap_or_default().trim();
+            essence.eq_ignore_ascii_case("text/html")
+                || essence.eq_ignore_ascii_case("application/xhtml+xml")
+        })
 }
 
-async fn scrape_media(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Form(params): Form<ScrapeForm>,
-) -> Response {
-    let authorized = headers.get(SHARED_SECRET_HEADER).is_some_and(|value| {
-        constant_time_eq(value.as_bytes(), state.shared_secret.as_bytes())
-    });
-    if !authorized {
-        return error_response(StatusCode::FORBIDDEN, "Forbidden");
+/// The `charset` parameter of `Content-Type`, when it names an encoding the
+/// tokenizer supports. A `<meta charset>` can still override it.
+fn declared_encoding(headers: &HeaderMap) -> Option<AsciiCompatibleEncoding> {
+    let value = headers.get(header::CONTENT_TYPE)?.to_str().ok()?;
+    let label = value.split(';').skip(1).find_map(|parameter| {
+        let (name, label) = parameter.split_once('=')?;
+        name.trim()
+            .eq_ignore_ascii_case("charset")
+            .then(|| label.trim().trim_matches('"'))
+    })?;
+    AsciiCompatibleEncoding::new(Encoding::for_label(label.as_bytes())?)
+}
+
+/// What the tokenizer has found so far.
+struct MediaLinks {
+    /// The page's URL, until a `<base href>` replaces it.
+    base: Url,
+    base_seen: bool,
+    links: Vec<String>,
+    seen: HashSet<String>,
+}
+
+impl MediaLinks {
+    fn visit(&mut self, element: &Element<'_, '_>) {
+        let attribute = match element.tag_name().as_str() {
+            "base" => {
+                // Only the first <base href> counts, as in a browser.
+                if !self.base_seen {
+                    self.base_seen = true;
+                    if let Some(base) = element
+                        .get_attribute("href")
+                        .and_then(|href| self.base.join(href.trim()).ok())
+                    {
+                        self.base = base;
+                    }
+                }
+                return;
+            }
+            "a" | "area" => "href",
+            _ => "src",
+        };
+        if let Some(link) = element.get_attribute(attribute) {
+            self.push(&link);
+        }
     }
 
-    let Some(website_url) = parse_website_url(&params.url) else {
-        return error_response(
-            StatusCode::BAD_REQUEST,
-            "Only http and https URLs can be scraped",
-        );
-    };
+    /// Keeps a link if it resolves to an http(s) URL with a media extension.
+    /// Query strings and fragments are dropped; the first copy of each URL
+    /// keeps its place in page order.
+    fn push(&mut self, link: &str) {
+        let Ok(mut url) = self.base.join(link.trim()) else {
+            return;
+        };
+        // Without this, `javascript:` and `data:` URLs ending in `.mp3` pass.
+        if !matches!(url.scheme(), "http" | "https") || !is_media_path(url.path()) {
+            return;
+        }
+        url.set_query(None);
+        url.set_fragment(None);
+        let url = String::from(url);
+        if self.seen.insert(url.clone()) {
+            self.links.push(url);
+        }
+    }
+}
 
-    // Non-2xx statuses are errors too.
-    let Ok(mut response) = state.agent.get(website_url.as_str()).call() else {
-        return error_response(
-            StatusCode::BAD_GATEWAY,
-            "Cannot scrape media from this website",
-        );
-    };
-    let final_url = Url::parse(&response.get_uri().to_string())
-        .unwrap_or_else(|_| website_url.clone());
+const fn discard(_: &[u8]) {}
 
-    let body = match response
-        .body_mut()
-        .with_config()
-        .limit(MAX_BODY_BYTES)
-        .lossy_utf8(true)
-        .read_to_string()
+/// Streams a page through `lol_html`, collecting media links as they pass.
+struct MediaLinkParser {
+    rewriter: HtmlRewriter<'static, fn(&[u8])>,
+    found: Arc<Mutex<MediaLinks>>,
+}
+
+impl MediaLinkParser {
+    fn new(page_url: Url, encoding: Option<AsciiCompatibleEncoding>) -> Self {
+        let found = Arc::new(Mutex::new(MediaLinks {
+            base: page_url,
+            base_seen: false,
+            links: Vec::new(),
+            seen: HashSet::new(),
+        }));
+        let handler_found = Arc::clone(&found);
+        let mut settings = Settings::new_send()
+            .with_adjust_charset_on_meta_tag(true)
+            // Ambiguous markup is parsed as best it can be rather than refused.
+            .with_strict(false)
+            .append_element_content_handler(element!(LINK_SELECTOR, move |element| {
+                handler_found
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner)
+                    .visit(element);
+                Ok(())
+            }));
+        if let Some(encoding) = encoding {
+            settings = settings.with_encoding(encoding);
+        }
+        let sink: fn(&[u8]) = discard;
+        Self {
+            rewriter: HtmlRewriter::new(settings, sink),
+            found,
+        }
+    }
+
+    fn write(&mut self, chunk: &[u8]) -> Result<(), RewritingError> {
+        self.rewriter.write(chunk)
+    }
+
+    fn finish(self) -> Result<Vec<String>, RewritingError> {
+        self.rewriter.end()?;
+        let mut found = self.found.lock().unwrap_or_else(PoisonError::into_inner);
+        Ok(std::mem::take(&mut found.links))
+    }
+}
+
+/// Fetches a page and lists its media links. The result's URL is the page's
+/// final URL after redirects, which relative links resolve against.
+async fn scrape(client: &reqwest::Client, url: Url) -> Result<ScrapeResult, ErrorCode> {
+    let mut response = client
+        .get(url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status)
+        .map_err(|_| ErrorCode::Unreachable)?;
+    if !is_html(response.headers()) {
+        return Err(ErrorCode::NotHtml);
+    }
+    if response
+        .content_length()
+        .is_some_and(|length| length > MAX_BODY_BYTES as u64)
     {
-        Ok(body) => body,
-        Err(ureq::Error::BodyExceedsLimit(_)) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "This page is too large to scrape",
-            );
-        }
-        Err(_) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                "Cannot scrape media from this website",
-            );
-        }
-    };
+        return Err(ErrorCode::TooLarge);
+    }
 
-    let name_urls = media_links(&final_url, &body);
-    html_response(
-        StatusCode::OK,
-        media_panel(website_url.as_str(), &name_urls),
-    )
+    let final_url = response.url().clone();
+    let mut parser =
+        MediaLinkParser::new(final_url.clone(), declared_encoding(response.headers()));
+    let mut received = 0;
+    while let Some(chunk) = response.chunk().await.map_err(|_| ErrorCode::Unreachable)? {
+        received += chunk.len();
+        if received > MAX_BODY_BYTES {
+            return Err(ErrorCode::TooLarge);
+        }
+        parser.write(&chunk).map_err(|_| ErrorCode::Unreachable)?;
+    }
+    let links = parser.finish().map_err(|_| ErrorCode::Unreachable)?;
+    Ok(ScrapeResult {
+        url: final_url.into(),
+        links,
+    })
 }
 
-#[tokio::main]
+fn json_response(status: StatusCode, body: &impl Serialize) -> Response<Body> {
+    // These types always serialize.
+    let mut response =
+        Response::new(Body::from(serde_json::to_string(body).unwrap_or_default()));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/json"),
+    );
+    response
+}
+
+fn error_response(error: ErrorCode) -> Response<Body> {
+    json_response(error.status(), &ScrapeError { error })
+}
+
+struct Scraper {
+    shared_secret: String,
+    client: reqwest::Client,
+}
+
+impl Scraper {
+    async fn handle(&self, request: Request) -> Response<Body> {
+        let authorized =
+            request
+                .headers()
+                .get(SHARED_SECRET_HEADER)
+                .is_some_and(|value| {
+                    constant_time_eq(value.as_bytes(), self.shared_secret.as_bytes())
+                });
+        if !authorized {
+            return error_response(ErrorCode::Forbidden);
+        }
+        if request.method() != Method::POST || request.uri().path() != ROUTE {
+            return error_response(ErrorCode::NotFound);
+        }
+        let Ok(ScrapeRequest { url }) = serde_json::from_slice(request.body()) else {
+            return error_response(ErrorCode::InvalidRequest);
+        };
+        let Some(url) = parse_website_url(&url) else {
+            return error_response(ErrorCode::InvalidUrl);
+        };
+        match scrape(&self.client, url).await {
+            Ok(result) => json_response(StatusCode::OK, &result),
+            Err(error) => error_response(error),
+        }
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
     // Fail at cold start rather than accept requests without a secret to check.
     let shared_secret = std::env::var(SHARED_SECRET_VARIABLE)
         .ok()
         .filter(|secret| !secret.is_empty())
         .ok_or_else(|| format!("{SHARED_SECRET_VARIABLE} must be set"))?;
-    let state = AppState {
-        shared_secret: shared_secret.into(),
-        agent: ureq::Agent::config_builder()
-            .timeout_connect(Some(CONNECT_TIMEOUT))
-            .timeout_global(Some(FETCH_TIMEOUT))
-            .build()
-            .into(),
-    };
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .map_err(|_| "a TLS crypto provider was already installed")?;
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(FETCH_TIMEOUT)
+        .user_agent(concat!("cloud-web-scraper/", env!("CARGO_PKG_VERSION")))
+        .build()?;
+    let scraper = Arc::new(Scraper {
+        shared_secret,
+        client,
+    });
 
-    let app = Router::new()
-        .route("/scrape/media", post(scrape_media))
-        .with_state(state);
-    run(app).await
+    run(service_fn(move |request: Request| {
+        let scraper = Arc::clone(&scraper);
+        async move { Ok::<_, Error>(scraper.handle(request).await) }
+    }))
+    .await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn media_links(page: &str, chunks: &[&str]) -> Vec<String> {
+        let mut parser = MediaLinkParser::new(Url::parse(page).unwrap(), None);
+        for chunk in chunks {
+            parser.write(chunk.as_bytes()).unwrap();
+        }
+        parser.finish().unwrap()
+    }
 
     #[test]
     fn secret_comparison() {
@@ -238,38 +381,97 @@ mod tests {
     }
 
     #[test]
+    fn media_extensions_are_sorted_and_lowercase() {
+        assert!(MEDIA_EXTENSIONS.is_sorted());
+        assert!(MEDIA_EXTENSIONS.iter().all(|extension| {
+            extension
+                .bytes()
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        }));
+        assert!(is_media_path("/a/b.MP3"));
+        assert!(is_media_path("/clip.webm"));
+        assert!(!is_media_path("/notes.pdf"));
+        assert!(!is_media_path("/mp3"));
+        assert!(!is_media_path("/"));
+    }
+
+    #[test]
     fn media_links_resolve_against_the_page() {
-        let base = Url::parse("https://example.com/shows/episode.html").unwrap();
-        let body = r#"
+        let links = media_links(
+            "https://example.com/shows/episode.html",
+            &[r#"
             <a href="/media/a.mp3?token=1">root-relative</a>
-            <a href="b.mp4">page-relative</a>
+            <a href="b.mp4#t=10">page-relative</a>
             <video src="//cdn.example.net/c.webm"></video>
             <audio><source src="https://other.example/d.ogg"></audio>
-            <a href="/media/a.mp3">duplicate</a>
+            <A HREF="/media/a.mp3">duplicate</A>
             <a href="notes.pdf">not media</a>
             <img src="poster.mp4">
+            <a href="javascript:alert(1)//e.mp3">script</a>
+            <a href="data:text/html,x//f.mp3">data</a>
             <a>no link</a>
-        "#;
+        "#],
+        );
         assert_eq!(
-            media_links(&base, body),
-            vec![
-                ("a.mp3".into(), "https://example.com/media/a.mp3".into()),
-                ("b.mp4".into(), "https://example.com/shows/b.mp4".into()),
-                ("c.webm".into(), "https://cdn.example.net/c.webm".into()),
-                ("d.ogg".into(), "https://other.example/d.ogg".into()),
+            links,
+            [
+                "https://example.com/media/a.mp3",
+                "https://example.com/shows/b.mp4",
+                "https://cdn.example.net/c.webm",
+                "https://other.example/d.ogg",
             ]
         );
     }
 
     #[test]
-    fn panel_escapes_scraped_text() {
-        let html = media_panel(
-            "https://example.com/?q=<script>",
-            &[("a\".mp3".into(), "https://example.com/a\".mp3".into())],
+    fn first_base_element_changes_resolution() {
+        let links = media_links(
+            "https://example.com/page.html",
+            &[
+                r#"<head><base href="https://cdn.example.net/media/"><base href="/ignored/">"#,
+                r#"</head><body><a href="a.mp3">a</a></body>"#,
+            ],
         );
-        assert!(!html.contains("<script>"));
-        assert!(html.contains("&lt;script&gt;"));
-        assert!(html.contains("href=\"https://example.com/a&quot;.mp3\""));
-        assert!(html.contains("download=\"a&quot;.mp3\""));
+        assert_eq!(links, ["https://cdn.example.net/media/a.mp3"]);
+    }
+
+    #[test]
+    fn tags_split_across_chunks_are_found() {
+        let links = media_links(
+            "https://example.com/",
+            &["<p>intro</p><a hr", "ef=\"/a.m", "p3\">a</a>"],
+        );
+        assert_eq!(links, ["https://example.com/a.mp3"]);
+    }
+
+    #[test]
+    fn only_html_responses_are_parsed() {
+        let mut headers = HeaderMap::new();
+        assert!(is_html(&headers));
+        headers.insert(
+            header::CONTENT_TYPE,
+            HeaderValue::from_static("Text/HTML; charset=Shift_JIS"),
+        );
+        assert!(is_html(&headers));
+        assert_eq!(
+            declared_encoding(&headers)
+                .map(|encoding| <&Encoding>::from(encoding).name()),
+            Some("Shift_JIS")
+        );
+        headers.insert(header::CONTENT_TYPE, HeaderValue::from_static("video/mp4"));
+        assert!(!is_html(&headers));
+        assert!(declared_encoding(&headers).is_none());
+    }
+
+    #[test]
+    fn errors_serialize_as_snake_case_codes() {
+        assert_eq!(
+            serde_json::to_string(&ScrapeError {
+                error: ErrorCode::TooLarge
+            })
+            .unwrap(),
+            r#"{"error":"too_large"}"#
+        );
+        assert_eq!(ErrorCode::InvalidUrl.status(), StatusCode::BAD_REQUEST);
     }
 }
