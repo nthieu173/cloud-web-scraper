@@ -1,6 +1,8 @@
 name: Release
 on:
-  workflow_dispatch:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
 permissions:
   contents: read
 concurrency:
@@ -12,7 +14,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     permissions:
-      contents: write # Create the vX.Y.Z tag and its release.
+      contents: write # Create the pushed tag's release.
     env:
       RUSTC_WRAPPER: ''
       CARGO_INCREMENTAL: '0'
@@ -25,33 +27,27 @@ jobs:
       # rustup is preinstalled; rust-toolchain.toml selects the version.
       - name: Install Rust toolchain
         run: rustup toolchain install
-      - name: Read version and check the release is new
+      - name: Check the tag matches Cargo.toml and is on main
         id: version
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [[ "$GITHUB_REF" != refs/heads/main ]]; then
-            echo "Releases are cut from main, not $GITHUB_REF." >&2
+          tag="$GITHUB_REF_NAME"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tags are vMAJOR.MINOR.PATCH, not '$tag'." >&2
             exit 1
           fi
           version="$(cargo metadata --locked --no-deps --format-version 1 \
             | jq -r '.packages[] | select(.name == "cloud-web-scraper") | .version')"
-          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Cargo.toml version must be MAJOR.MINOR.PATCH, not '$version'." >&2
+          if [[ "$tag" != "v$version" ]]; then
+            echo "Tag $tag does not match Cargo.toml's version $version." >&2
             exit 1
           fi
-          tag="v$version"
-          # Captured before matching: grep -q exiting early would fail the pipe.
-          tags="$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$tag" --jq '.[].ref')"
-          if grep -qxF "refs/tags/$tag" <<< "$tags"; then
-            echo "Tag $tag already exists; bump the version in Cargo.toml." >&2
-            exit 1
-          fi
-          # Listing includes drafts, which need not have a tag yet.
-          releases="$(gh api --paginate "repos/$GITHUB_REPOSITORY/releases" --jq '.[].tag_name')"
-          if grep -qxF "$tag" <<< "$releases"; then
-            echo "A release for $tag already exists; bump the version in Cargo.toml." >&2
+          # "behind" or "identical": the tagged commit is in main's history.
+          status="$(gh api "repos/$GITHUB_REPOSITORY/compare/main...$GITHUB_SHA" --jq .status)"
+          if [[ "$status" != behind && "$status" != identical ]]; then
+            echo "$tag points at $GITHUB_SHA, which is not on main." >&2
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -86,7 +82,7 @@ jobs:
             target/bundle/cloud-web-scraper.tar.gz \
             target/bundle/cloud-web-scraper.tar.gz.sha256 \
             --repo "$GITHUB_REPOSITORY" \
-            --target "$GITHUB_SHA" \
+            --verify-tag \
             --title "$TAG" \
             --notes "Bundle for wiz-vm. SHA-256 of cloud-web-scraper.tar.gz: $(cut -d' ' -f1 target/bundle/cloud-web-scraper.tar.gz.sha256)"
       - name: Report bundle digest

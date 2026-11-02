@@ -59,12 +59,14 @@ every target.
 ## Release
 
 1. Bump `version` in `Cargo.toml` (and `Cargo.lock`), and merge to `main`.
-2. Run the **Release** workflow on `main`: `gh workflow run release.yml --ref main`.
+2. Tag that commit on `main` and push the tag:
+   `git tag -a v<version> -m v<version> && git push origin v<version>`.
 
-It fails if tag `v<version>` or its release already exists. Otherwise it runs the
-gate, builds the bundle and publishes it as release `v<version>` on the commit it
-built, with the bundle's SHA-256 in the job summary. Pin that release and digest
-in wiz-vm.
+The tag push runs the **Release** workflow. It fails unless the tag is
+`v<version>` for `Cargo.toml`'s version and points at a commit on `main`, or if
+the release already exists. Otherwise it runs the gate, builds the bundle and
+publishes it as release `v<version>` on the tag, with the bundle's SHA-256 in
+the job summary. Pin that release and digest in wiz-vm.
 
 ## Bundle contract
 
