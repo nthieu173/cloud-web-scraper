@@ -1,7 +1,10 @@
-# Cargo builds the Lambda; Node tests the Worker. `make help` lists the targets.
+# Cargo builds the Lambda; Node tests the Worker; scripts/bundle.sh packs both
+# with public/ for release. `make help` lists the targets.
+
+BUILD_VENV := target/build-venv
 
 .DEFAULT_GOAL := build
-.PHONY: build fmt lint test gate gate-why gate-counts gate-one \
+.PHONY: build fmt lint test bundle gate gate-why gate-counts gate-one \
 	setup-dev hooks-install hooks-check clean help
 
 ## build: compile the Lambda for the host (default)
@@ -37,6 +40,17 @@ test:
 	cargo test --all-features --locked
 	node --test worker.test.mjs
 
+# The same hash-checked install release CI uses.
+$(BUILD_VENV)/.installed: build-requirements.txt
+	rm -rf $(BUILD_VENV)
+	python3 -m venv $(BUILD_VENV)
+	$(BUILD_VENV)/bin/pip install --require-hashes --only-binary=:all: -r build-requirements.txt
+	touch $@
+
+## bundle: build the release tarball and its .sha256 into target/bundle
+bundle: $(BUILD_VENV)/.installed
+	PATH="$(CURDIR)/$(BUILD_VENV)/bin:$$PATH" scripts/bundle.sh
+
 ## gate: every check in one pass, with test counts (use this, not a second run)
 gate:
 	./scripts/gate.sh
@@ -62,7 +76,7 @@ gate-one:
 	@test -n "$(GATE)" || { echo "usage: make gate-one GATE=<substring>"; exit 1; }
 	GATE='$(GATE)' ./scripts/gate.sh
 
-## clean: drop build output
+## clean: drop build output, including the bundle and its build tools
 clean:
 	cargo clean
 

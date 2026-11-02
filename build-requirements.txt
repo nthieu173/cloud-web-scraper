@@ -1,0 +1,6 @@
+# Release build tools for `make bundle` and .github/workflows/release.yml (x86_64 Linux).
+# cargo-lambda cross-compiles to arm64 with Zig as the C compiler and linker.
+cargo-lambda==1.9.2 \
+    --hash=sha256:db2c0b1d53d7ed0055198fd045f641addc91b180b20d794fcf78cc9a9efacb38
+ziglang==0.15.2 \
+    --hash=sha256:806316453d1ede7174ed3fefb8e5348154629089c3bb5fe812dfd0e172fac130
