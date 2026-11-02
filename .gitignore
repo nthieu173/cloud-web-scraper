@@ -1,1 +1,7 @@
 /target
+*.log
+
+# Local tooling
+/.direnv/
+/.venv/
+/.envrc.local

@@ -1,0 +1,14 @@
+# Pre-production API refactors need no compatibility layer.
+avoid-breaking-exported-api = false
+
+# Tests fail at their violated assumptions; production code handles errors.
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
+
+# Each pair comes from upstream crates mid-migration:
+# - base64: lambda_http uses 0.22, ureq 0.23.
+# - syn: proc macros for lambda_runtime and scraper's selectors still use 2;
+#   cssparser and ICU's macros use 3.
+# - windows-sys: Windows-only (ring and tokio's mio); never built for Lambda.
+allowed-duplicate-crates = ["base64", "syn", "windows-sys"]

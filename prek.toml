@@ -1,0 +1,95 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  # Vendored, minified third-party assets keep their upstream bytes.
+  { id = "trailing-whitespace", exclude = '^public/(css|js)/[^/]+\.min\.(css|js)$' },
+  { id = "end-of-file-fixer", exclude = '^public/(css|js)/[^/]+\.min\.(css|js)$' },
+  { id = "check-added-large-files" },
+  { id = "check-toml" },
+  { id = "check-json" },
+  {
+    id = "pretty-format-json",
+    args = [
+      "--autofix",
+      "--no-sort-keys",
+      "--indent=2",
+    ]
+  },
+  {
+    id = "check-yaml",
+    args = [
+      "--disallow-unknown-tags",
+    ]
+  },
+]
+
+[[repos]]
+repo = "local"
+
+# Rust and configuration changes check the whole crate, including deletions.
+[[repos.hooks]]
+id = "cargo-fmt"
+name = "cargo fmt"
+entry = "cargo fmt --all -- --check"
+language = "system"
+files = '(^|/)(Cargo\.toml|\.?rustfmt\.toml|rust-toolchain(\.toml)?)$|\.rs$|^prek\.toml$'
+include_deleted = true
+pass_filenames = false
+require_serial = true
+
+[[repos.hooks]]
+id = "cargo-clippy"
+name = "cargo clippy (shared lint policy)"
+entry = "cargo lint"
+language = "system"
+files = '(^|/)(Cargo\.(toml|lock)|\.?clippy\.toml|rust-toolchain(\.toml)?)$|\.rs$|^\.cargo/.*\.toml$|^prek\.toml$'
+include_deleted = true
+pass_filenames = false
+require_serial = true
+
+[[repos.hooks]]
+id = "worker-test"
+name = "node --test worker.test.mjs"
+entry = "node --test worker.test.mjs"
+language = "system"
+files = '^(worker\.js|worker\.test\.mjs|package\.json|prek\.toml)$'
+include_deleted = true
+pass_filenames = false
+require_serial = true
+
+[[repos]]
+repo = "https://github.com/tombi-toml/tombi-pre-commit"
+rev = "v1.9.6"
+# Cargo and uv own their lockfiles' formatting; reformatting them here only churns.
+hooks = [
+  { id = "tombi-format", args = ["--offline"], exclude = '(^|/)(Cargo|uv)\.lock$' },
+]
+
+[[repos]]
+repo = "https://github.com/google/yamlfmt"
+rev = "v0.21.0"
+hooks = [{ id = "yamlfmt" }]
+
+[[repos]]
+repo = "https://github.com/rhysd/actionlint"
+rev = "v1.7.12"
+hooks = [{ id = "actionlint" }]
+
+[[repos]]
+repo = "https://github.com/zizmorcore/zizmor-pre-commit"
+rev = "v1.31.1"
+hooks = [
+  {
+    id = "zizmor",
+    args = [
+      "--offline",
+      "--persona=pedantic",
+      "--strict-collection",
+      "--no-progress",
+    ]
+  },
+]

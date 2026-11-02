@@ -1,0 +1,10 @@
+[alias]
+# The gate, CI and the pre-commit hook share one Clippy invocation. Lint levels
+# live in Cargo.toml.
+lint = "clippy --all-targets --all-features --locked -- -D warnings"
+
+# Caps parallelism so builds and the gate do not saturate large machines.
+# CI blanks RUSTC_WRAPPER and sets its own job count.
+[build]
+jobs = 8
+rustc-wrapper = "sccache"
