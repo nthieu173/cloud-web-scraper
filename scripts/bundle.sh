@@ -5,8 +5,9 @@
 #   target/bundle/cloud-web-scraper.tar.gz         bootstrap.zip, worker.js, public/
 #   target/bundle/cloud-web-scraper.tar.gz.sha256  sha256sum format
 #
-# `cargo lambda` and Zig must be on PATH; `make bundle` installs them from
-# build-requirements.txt. Entries are sorted, owned by 0:0 with normalized modes
+# `cargo lambda` and Zig must be on PATH, and web/'s npm dependencies
+# installed; `make bundle` does both. worker.js and public/ are web/'s build
+# (web/dist-worker/worker.js and web/dist/). Entries are sorted, owned by 0:0 with normalized modes
 # and stamped with SOURCE_DATE_EPOCH (default: the HEAD commit time), so the
 # tarball's bytes depend only on the files in it.
 
@@ -20,11 +21,12 @@ name=cloud-web-scraper.tar.gz
 : "${SOURCE_DATE_EPOCH:=$(git log -1 --format=%ct)}"
 
 cargo lambda build --release --arm64 --output-format zip --locked
+npm --prefix web run bundle
 
 rm -rf "$out"
 mkdir -p "$stage"
-cp worker.js "$stage/"
-cp -R public "$stage/public"
+cp web/dist-worker/worker.js "$stage/"
+cp -R web/dist "$stage/public"
 
 # cargo-lambda stamps the zip entry with the build time; the binary itself is
 # reproducible. Rewrite the zip with the same fixed time so a given commit

@@ -1,4 +1,8 @@
+# Build output
 /target
+/web/node_modules/
+/web/dist/
+/web/dist-worker/
 *.log
 
 # Local tooling

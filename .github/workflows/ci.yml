@@ -27,7 +27,8 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          package-manager-cache: false
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       # rustup is preinstalled; rust-toolchain.toml selects the version.
       - name: Install Rust toolchain
         run: rustup toolchain install
@@ -38,8 +39,8 @@ jobs:
             ~/.cargo/git
             target
           key: rust-${{ runner.os }}-${{ runner.arch }}-gate-v1-${{ hashFiles('rust-toolchain.toml', 'Cargo.lock') }}
-      # cargo fmt --check, cargo clippy (-D warnings), cargo doc, cargo test and
-      # node --test, all with --locked where Cargo takes it.
+      # npm ci in web/, then cargo fmt --check, cargo clippy (-D warnings),
+      # cargo doc, cargo test (all --locked), tsc, ESLint, Vitest and vite build.
       - name: Run repository gate
         id: gate
         run: make gate

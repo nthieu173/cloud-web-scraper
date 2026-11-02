@@ -5,9 +5,8 @@
 [[repos]]
 repo = "builtin"
 hooks = [
-  # Vendored, minified third-party assets keep their upstream bytes.
-  { id = "trailing-whitespace", exclude = '^public/(css|js)/[^/]+\.min\.(css|js)$' },
-  { id = "end-of-file-fixer", exclude = '^public/(css|js)/[^/]+\.min\.(css|js)$' },
+  { id = "trailing-whitespace" },
+  { id = "end-of-file-fixer" },
   { id = "check-added-large-files" },
   { id = "check-toml" },
   { id = "check-json" },
@@ -47,16 +46,6 @@ name = "cargo clippy (shared lint policy)"
 entry = "cargo lint"
 language = "system"
 files = '(^|/)(Cargo\.(toml|lock)|\.?clippy\.toml|rust-toolchain(\.toml)?)$|\.rs$|^\.cargo/.*\.toml$|^prek\.toml$'
-include_deleted = true
-pass_filenames = false
-require_serial = true
-
-[[repos.hooks]]
-id = "worker-test"
-name = "node --test worker.test.mjs"
-entry = "node --test worker.test.mjs"
-language = "system"
-files = '^(worker\.js|worker\.test\.mjs|package\.json|prek\.toml)$'
 include_deleted = true
 pass_filenames = false
 require_serial = true

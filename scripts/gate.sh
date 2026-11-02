@@ -48,7 +48,7 @@ none='cat >/dev/null; printf ok'
 cause_line() {
 	local file="$1" line
 	line="$(sed $'s/\033\\[[0-9;]*[a-zA-Z]//g' "$file" |
-		grep -m1 -E '^(error(\[[A-Z0-9]+\])?:|error |failures:|error\[)|panicked at|^not ok |test result: FAILED')"
+		grep -m1 -E '^(error(\[[A-Z0-9]+\])?:|error |npm error |failures:|error\[)|panicked at|^ *FAIL |test result: FAILED')"
 	if [ -z "$line" ]; then
 		line="$(sed $'s/\033\\[[0-9;]*[a-zA-Z]//g' "$file" |
 			grep -vE '^\s*(Compiling|Checking|Finished|Blocking|Downloading|Updating|warning:|$)' |
@@ -129,8 +129,9 @@ run() {
 # their sum.
 rust_total='awk "/^test result:/ {p += \$4; f += \$6} END {printf \"%d passed, %d failed\", p, f}"'
 
-# `node --test` prints `ℹ pass N` and `ℹ fail N` once per run (`#` under TAP).
-node_total='awk "/^(ℹ|#) pass / {p = \$3} /^(ℹ|#) fail / {f = \$3} END {printf \"%d passed, %d failed\", p, f}"'
+vitest_total='grep -E "^ *Tests +" | tail -1 | sed "s/^ *Tests *//"'
+
+bundle_total='grep -cE "dist(-worker)?/.*\.(js|css)" | sed "s/$/ scripts and styles emitted/"'
 
 run "cargo fmt --check" "$none" cargo fmt --check
 run "cargo clippy" "$none" cargo lint
@@ -138,7 +139,10 @@ run "cargo clippy" "$none" cargo lint
 run "cargo doc" "$none" env RUSTDOCFLAGS="-D warnings" \
 	cargo doc --no-deps --all-features --locked --document-private-items
 run "cargo test" "$rust_total" cargo test --all-features --locked
-run "node --test" "$node_total" node --test worker.test.mjs
+run "tsc --noEmit" "$none" npm --prefix web run typecheck
+run "eslint" "$none" npm --prefix web run lint
+run "vitest" "$vitest_total" npm --prefix web test -- --run
+run "vite build" "$bundle_total" npm --prefix web run bundle
 
 if [ "${#names[@]}" -eq 0 ]; then
 	printf '\n\033[31mno gate matched GATE=%s\033[0m\n' "${GATE:-}"
