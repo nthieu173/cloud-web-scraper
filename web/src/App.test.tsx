@@ -1,7 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import App from "./App";
+import { RESCRAPE_AFTER_MS } from "./api/cache";
 
 function stubWorker(...responses: Response[]): ReturnType<typeof vi.fn<typeof fetch>> {
   const worker = vi.fn<typeof fetch>();
@@ -41,8 +42,7 @@ test("lists a page's media links, newest page first", async () => {
 
   await submit("https://b.example");
   await screen.findByText("No audio or video links found.");
-  const panels = within(screen.getByRole("region", { name: "Results" })).getAllByRole("heading");
-  expect(panels.map((heading) => heading.textContent)).toEqual(["https://b.example", "https://a.example"]);
+  expect(headings()).toEqual(["https://b.example", "https://a.example"]);
 });
 
 test("shows the error for a failed scrape", async () => {
@@ -82,30 +82,54 @@ test("disables the form while a scrape is pending", async () => {
   expect(await screen.findByRole("button", { name: "Scrape" })).toBeEnabled();
 });
 
-test("answers a repeat scrape from this browser's cache until asked to scrape again", async () => {
+function headings(): (string | null)[] {
+  return within(screen.getByRole("region", { name: "Results" }))
+    .getAllByRole("heading")
+    .map((heading) => heading.textContent);
+}
+
+test("moves a listed page to the top, scraping it again once its result is an hour old", async () => {
   const worker = stubWorker(
     Response.json({ url: "https://a.example/", links: ["https://a.example/old.mp3"] }),
+    Response.json({ url: "https://b.example/", links: [] }),
     Response.json({ url: "https://a.example/", links: ["https://a.example/new.mp3"] }),
   );
+  const start = Date.now();
+  const clock = vi.spyOn(Date, "now").mockReturnValue(start);
   render(<App />);
 
   await submit("https://a.example");
   await screen.findByRole("link", { name: "old.mp3" });
-  expect(screen.queryByText(/^Cached from/u)).toBeNull();
+  await submit("https://b.example");
+  await screen.findByText("No audio or video links found.");
 
-  await submit("https://a.example/");
-  expect(await screen.findByText(/^Cached from/u)).toBeInTheDocument();
-  expect(screen.getAllByRole("link", { name: "old.mp3" })).toHaveLength(2);
-  expect(worker).toHaveBeenCalledOnce();
-
-  await userEvent.setup().click(screen.getByRole("button", { name: "Scrape again" }));
-  expect(await screen.findByRole("link", { name: "new.mp3" })).toBeInTheDocument();
+  clock.mockReturnValue(start + RESCRAPE_AFTER_MS - 1);
+  await submit("https://A.example/");
+  await waitFor(() => {
+    expect(headings()).toEqual(["https://A.example/", "https://b.example"]);
+  });
+  expect(screen.getByRole("link", { name: "old.mp3" })).toBeInTheDocument();
   expect(worker).toHaveBeenCalledTimes(2);
 
-  // The fresh result replaced the cached one.
+  clock.mockReturnValue(start + RESCRAPE_AFTER_MS);
   await submit("https://a.example");
-  expect(await screen.findAllByRole("link", { name: "new.mp3" })).toHaveLength(2);
-  expect(worker).toHaveBeenCalledTimes(2);
+  expect(await screen.findByRole("link", { name: "new.mp3" })).toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: "old.mp3" })).toBeNull();
+  expect(headings()).toEqual(["https://a.example", "https://b.example"]);
+  expect(worker).toHaveBeenCalledTimes(3);
+});
+
+test("answers a page scraped on an earlier visit from this browser's cache", async () => {
+  const worker = stubWorker(Response.json({ url: "https://a.example/", links: ["https://a.example/song.mp3"] }));
+  const { unmount } = render(<App />);
+  await submit("https://a.example");
+  await screen.findByRole("link", { name: "song.mp3" });
+  unmount();
+
+  render(<App />);
+  await submit("https://a.example");
+  expect(await screen.findByRole("link", { name: "song.mp3" })).toBeInTheDocument();
+  expect(worker).toHaveBeenCalledOnce();
 });
 
 test("does not cache errors", async () => {
@@ -113,9 +137,12 @@ test("does not cache errors", async () => {
     Response.json({ error: "unreachable" }, { status: 502 }),
     Response.json({ url: "https://a.example/", links: [] }),
   );
-  render(<App />);
+  const { unmount } = render(<App />);
   await submit("https://a.example");
   await screen.findByRole("alert");
+  unmount();
+
+  render(<App />);
   await submit("https://a.example");
   await screen.findByText("No audio or video links found.");
   expect(worker).toHaveBeenCalledTimes(2);

@@ -1,6 +1,6 @@
 /**
- * Successful scrapes, kept in this browser's localStorage so scraping a page
- * again within a week costs no request. Errors are never kept.
+ * Successful scrapes, kept in this browser's localStorage so a page scraped on
+ * an earlier visit within a week costs no request. Errors are never kept.
  *
  * Storage is best-effort: private windows, blocked storage or a full quota
  * leave the page working without a cache.
@@ -10,6 +10,9 @@ import { type ScrapeResult, decodeScrapeResult, isRecord, parseJson } from "./wi
 
 /** Safari clears a site's storage after 7 days without a visit anyway. */
 export const CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** A page already on screen is scraped again only once its result is this old. */
+export const RESCRAPE_AFTER_MS = 60 * 60 * 1000;
 
 /** Results are a few kilobytes each, far inside the ~5 MB per-site quota. */
 export const CACHE_MAX_ENTRIES = 50;
@@ -51,8 +54,9 @@ function load(now: number): CachedScrape[] {
   });
 }
 
-export function cachedScrape(url: URL, now: number): CachedScrape | undefined {
-  return load(now).find((entry) => entry.url === url.href);
+/** The page's result if it is younger than `maxAge` (at most CACHE_MAX_AGE_MS). */
+export function cachedScrape(url: URL, now: number, maxAge = CACHE_MAX_AGE_MS): CachedScrape | undefined {
+  return load(now).find((entry) => entry.url === url.href && now - entry.scrapedAt < maxAge);
 }
 
 /** Stores a result, dropping expired entries and the oldest beyond the limit. */

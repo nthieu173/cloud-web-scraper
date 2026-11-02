@@ -28,7 +28,9 @@ here.
   - `src/`: the page; `src/api/wire.ts` decodes the JSON the page and the
     Worker exchange, matching the Lambda's types; `src/api/cache.ts` keeps
     successful results in the visitor's localStorage for 7 days (50 pages at
-    most), so repeat scrapes skip the Worker until "Scrape again".
+    most). The results list holds each page once, and scraping a page again
+    moves it to the top. The cache answers a page already in the list for an
+    hour and any other page for the week; after that it is scraped again.
   - `worker/`: the Cloudflare Worker, built to one ES module.
   - `public/`: static files copied into the page's build.
 - `scripts/gate.sh`: every check, run by `make gate` and CI.

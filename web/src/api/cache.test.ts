@@ -1,4 +1,4 @@
-import { CACHE_MAX_AGE_MS, CACHE_MAX_ENTRIES, cacheScrape, cachedScrape } from "./cache";
+import { CACHE_MAX_AGE_MS, CACHE_MAX_ENTRIES, RESCRAPE_AFTER_MS, cacheScrape, cachedScrape } from "./cache";
 
 const NOW = Date.UTC(2026, 10, 1);
 const page = new URL("https://a.example/");
@@ -12,6 +12,12 @@ test("returns a result until it is seven days old", () => {
     result,
   });
   expect(cachedScrape(page, NOW + CACHE_MAX_AGE_MS)).toBeUndefined();
+});
+
+test("can ask for a younger result", () => {
+  cacheScrape(page, result, NOW);
+  expect(cachedScrape(page, NOW + RESCRAPE_AFTER_MS - 1, RESCRAPE_AFTER_MS)?.result).toEqual(result);
+  expect(cachedScrape(page, NOW + RESCRAPE_AFTER_MS, RESCRAPE_AFTER_MS)).toBeUndefined();
 });
 
 test("a new scrape of the same page replaces the old one", () => {

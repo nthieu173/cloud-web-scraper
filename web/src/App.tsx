@@ -1,22 +1,16 @@
 import { type JSX, type SubmitEvent, startTransition, useActionState } from "react";
 
-import { cacheScrape, cachedScrape } from "./api/cache";
+import { CACHE_MAX_AGE_MS, RESCRAPE_AFTER_MS, cacheScrape, cachedScrape } from "./api/cache";
 import { scrapeMedia } from "./api/client";
 import { type ErrorCode, type ScrapeOutcome, parseWebsiteUrl } from "./api/wire";
 import { mediaName } from "./mediaName";
 
 interface Scrape {
-  readonly id: number;
+  /** The normalized URL, or the input as typed when it is invalid; unique in the list. */
+  readonly key: string;
+  /** The URL as typed. */
   readonly url: string;
   readonly outcome: ScrapeOutcome;
-  /** Set when the result came from this browser's cache: when it was scraped. */
-  readonly cachedAt?: number;
-}
-
-interface ScrapeRequest {
-  readonly url: string;
-  /** Skip the cache, as "Scrape again" does. */
-  readonly fresh: boolean;
 }
 
 const UNAVAILABLE = "The scraper is unavailable right now. Try again later.";
@@ -32,34 +26,32 @@ const MESSAGES: Record<ErrorCode, string> = {
   unavailable: UNAVAILABLE,
 };
 
-const SCRAPED_AT = new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" });
-
-/** Newest first. The list only grows, so its length is a fresh key. */
-async function scrape(previous: readonly Scrape[], request: ScrapeRequest): Promise<readonly Scrape[]> {
-  const url = request.url.trim();
-  const id = previous.length;
+/**
+ * Newest first, each page once; a repeated page moves to the top. The cache
+ * answers a page already in the list for an hour, and any other page for a
+ * week; after that the page is scraped again.
+ */
+async function scrape(previous: readonly Scrape[], input: string): Promise<readonly Scrape[]> {
+  const url = input.trim();
   const parsed = parseWebsiteUrl(url);
+  const key = parsed?.href ?? url;
+  const rest = previous.filter((entry) => entry.key !== key);
   if (parsed === undefined) {
-    return [{ id, url, outcome: { ok: false, error: "invalid_url" } }, ...previous];
+    return [{ key, url, outcome: { ok: false, error: "invalid_url" } }, ...rest];
   }
-  const cached = request.fresh ? undefined : cachedScrape(parsed, Date.now());
+  const listed = rest.length !== previous.length;
+  const cached = cachedScrape(parsed, Date.now(), listed ? RESCRAPE_AFTER_MS : CACHE_MAX_AGE_MS);
   if (cached !== undefined) {
-    return [{ id, url, outcome: { ok: true, result: cached.result }, cachedAt: cached.scrapedAt }, ...previous];
+    return [{ key, url, outcome: { ok: true, result: cached.result } }, ...rest];
   }
   const outcome = await scrapeMedia(url);
   if (outcome.ok) {
     cacheScrape(parsed, outcome.result, Date.now());
   }
-  return [{ id, url, outcome }, ...previous];
+  return [{ key, url, outcome }, ...rest];
 }
 
-interface ScrapePanelProps {
-  readonly scrape: Scrape;
-  readonly pending: boolean;
-  readonly onScrapeAgain: (url: string) => void;
-}
-
-function ScrapePanel({ scrape: { url, outcome, cachedAt }, pending, onScrapeAgain }: ScrapePanelProps): JSX.Element {
+function ScrapePanel({ scrape: { url, outcome } }: { readonly scrape: Scrape }): JSX.Element {
   if (!outcome.ok) {
     return (
       <article className="panel panel-error">
@@ -72,20 +64,6 @@ function ScrapePanel({ scrape: { url, outcome, cachedAt }, pending, onScrapeAgai
   return (
     <article className="panel">
       <h2>{url}</h2>
-      {cachedAt !== undefined && (
-        <div className="panel-note">
-          <span>Cached from {SCRAPED_AT.format(cachedAt)}</span>
-          <button
-            type="button"
-            disabled={pending}
-            onClick={() => {
-              onScrapeAgain(url);
-            }}
-          >
-            Scrape again
-          </button>
-        </div>
-      )}
       {links.length === 0 ? (
         <p>No audio or video links found.</p>
       ) : (
@@ -111,20 +89,12 @@ export default function App(): JSX.Element {
 
   // Dispatched from onSubmit rather than passed as the form's action, so React
   // does not reset the form and the URL stays for editing.
-  function request(url: string, fresh: boolean): void {
-    startTransition(() => {
-      dispatch({ url, fresh });
-    });
-  }
-
   function handleSubmit(event: SubmitEvent<HTMLFormElement>): void {
     event.preventDefault();
     const input = new FormData(event.currentTarget).get("url");
-    request(typeof input === "string" ? input : "", false);
-  }
-
-  function handleScrapeAgain(url: string): void {
-    request(url, true);
+    startTransition(() => {
+      dispatch(typeof input === "string" ? input : "");
+    });
   }
 
   return (
@@ -148,7 +118,7 @@ export default function App(): JSX.Element {
         </form>
         <section aria-label="Results" className="results">
           {scrapes.map((entry) => (
-            <ScrapePanel key={entry.id} scrape={entry} pending={pending} onScrapeAgain={handleScrapeAgain} />
+            <ScrapePanel key={entry.key} scrape={entry} />
           ))}
         </section>
       </main>
