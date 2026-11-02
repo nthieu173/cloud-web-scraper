@@ -8,7 +8,7 @@
 //! these shapes.
 
 use std::collections::HashSet;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use std::time::Duration;
 
 use encoding_rs::Encoding;
@@ -32,16 +32,32 @@ const FETCH_TIMEOUT: Duration = Duration::from_secs(8);
 /// Counted after decompression.
 const MAX_BODY_BYTES: usize = 5 * 1024 * 1024;
 
-/// File extensions treated as audio or video, lowercase and sorted for binary
-/// search. Hand-maintained: the common containers, codecs and playlists.
-const MEDIA_EXTENSIONS: &[&str] = &[
-    "3g2", "3gp", "aac", "ac3", "aif", "aifc", "aiff", "amr", "asf", "au", "avi", "caf",
-    "divx", "dv", "f4v", "flac", "flv", "m1v", "m2t", "m2ts", "m2v", "m3u", "m3u8",
-    "m4a", "m4b", "m4p", "m4r", "m4v", "mid", "midi", "mk3d", "mka", "mkv", "mov", "mp2",
-    "mp3", "mp4", "mp4v", "mpd", "mpe", "mpeg", "mpg", "mpga", "mts", "oga", "ogg",
-    "ogv", "opus", "qt", "ra", "ram", "snd", "spx", "ts", "vob", "wav", "wave", "weba",
-    "webm", "wma", "wmv",
-];
+/// Apache httpd's `docs/conf/mime.types`, vendored unmodified from
+/// <https://github.com/apache/httpd/blob/6393e628c004c52e13da3a1dab3a6670f8888e7e/docs/conf/mime.types>
+/// (public domain). Each uncommented line is a media type and its extensions.
+const MIME_TYPES: &str = include_str!("mime.types");
+
+/// HLS playlists are registered outside `audio/` and `video/`, but link to
+/// nothing else.
+const PLAYLIST_TYPES: &[&str] = &["application/vnd.apple.mpegurl"];
+
+/// The extensions `mime.types` gives the audio and video types, and the
+/// playlists; all lowercase there.
+static MEDIA_EXTENSIONS: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
+    MIME_TYPES
+        .lines()
+        .filter(|line| !line.starts_with('#'))
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let media_type = fields.next()?;
+            (media_type.starts_with("audio/")
+                || media_type.starts_with("video/")
+                || PLAYLIST_TYPES.contains(&media_type))
+            .then_some(fields)
+        })
+        .flatten()
+        .collect()
+});
 
 /// Elements whose link attribute can point at media, plus `<base>`, which
 /// changes what relative links resolve against.
@@ -105,9 +121,7 @@ fn parse_website_url(input: &str) -> Option<Url> {
 fn is_media_path(path: &str) -> bool {
     let file_name = path.rsplit('/').next().unwrap_or_default();
     file_name.rsplit_once('.').is_some_and(|(_, extension)| {
-        MEDIA_EXTENSIONS
-            .binary_search(&extension.to_ascii_lowercase().as_str())
-            .is_ok()
+        MEDIA_EXTENSIONS.contains(extension.to_ascii_lowercase().as_str())
     })
 }
 
@@ -381,18 +395,25 @@ mod tests {
     }
 
     #[test]
-    fn media_extensions_are_sorted_and_lowercase() {
-        assert!(MEDIA_EXTENSIONS.is_sorted());
+    fn media_extensions_come_from_mime_types() {
         assert!(MEDIA_EXTENSIONS.iter().all(|extension| {
             extension
                 .bytes()
                 .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
         }));
-        assert!(is_media_path("/a/b.MP3"));
-        assert!(is_media_path("/clip.webm"));
-        assert!(!is_media_path("/notes.pdf"));
-        assert!(!is_media_path("/mp3"));
-        assert!(!is_media_path("/"));
+        for path in [
+            "/a/b.MP3",
+            "/clip.webm",
+            "/c.mp4",
+            "/d.flac",
+            "/e.ogg",
+            "/live.m3u8",
+        ] {
+            assert!(is_media_path(path), "{path}");
+        }
+        for path in ["/notes.pdf", "/page.html", "/photo.jpg", "/mp3", "/"] {
+            assert!(!is_media_path(path), "{path}");
+        }
     }
 
     #[test]

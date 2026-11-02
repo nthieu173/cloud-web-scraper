@@ -21,6 +21,9 @@ here.
 
 - `src/main.rs`: the Lambda (`lambda_http`, function URL payload 2.0; reqwest
   and lol_html).
+- `src/mime.types`: Apache httpd's media type table, vendored unmodified at the
+  commit `src/main.rs` names. Its `audio/` and `video/` extensions decide which
+  links count as media. To update, replace the file and the commit link.
 - `web/`: one npm project (Vite, React, TypeScript, Vitest, ESLint):
   - `src/`: the page; `src/api/wire.ts` decodes the JSON the page and the
     Worker exchange, matching the Lambda's types.
